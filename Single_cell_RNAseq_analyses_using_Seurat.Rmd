@@ -1,0 +1,548 @@
+---
+title: "NP_1 seurat practice"
+author: "Lifei Jiang"
+date: "2/16/2020"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Setup the Seurat Object
+
+##Load the data and initialize seurat
+```{r}
+library(dplyr)
+library(Seurat)
+
+#load
+NP1.data <- Read10X(data.dir = "~/data/NP_1/outs/filtered_feature_bc_matrix/")
+nrow(NP1.data) #31053
+#initialize seurat
+NP1 <- CreateSeuratObject(counts = NP1.data, project = "NP1project", assay = "RNA", min.cells = 3, min.features = 200)
+
+NP1
+
+```
+## Explore the data: find that each row is a gene, and each colomn is a cell, represented by a barcode 
+```{r}
+nrow(NP1.data)
+ncol(NP1.data)
+NP1.data[c("Xkr4", "Gm1992", "Gm37381"), 1:3] #First run NP1.data to see the gene name
+```
+
+
+
+# Filter cells:QC and selecting cells for further analysis
+```{r}
+
+#add a mt gene percentage colomn, calulate the percentage of MT genes in each cell
+NP1[["percent.mt"]] <- PercentageFeatureSet(NP1, pattern = "^mt-")
+
+VlnPlot(NP1, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+#mt<7%
+#nFeature>500, nFeature< 6000
+
+plot1 <- FeatureScatter(NP1, feature1 = "nFeature_RNA", feature2 = "percent.mt")
+plot1
+plot2 <- FeatureScatter(NP1, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot2
+CombinePlots(plots = list(plot1, plot2))
+
+NP1 <- subset(NP1, subset = nFeature_RNA > 500 & nFeature_RNA < 6000 & percent.mt < 7)
+
+```
+
+# Normalizing the data
+```{r}
+
+# normalizes the feature expression measurements for each cell by the total expression
+# LogNormalize: Feature counts for each cell are divided by the total counts for that cell and multiplied by the scale.factor. This is then natural-log transformed using log1p.
+NP1 <- NormalizeData(NP1, normalization.method = "LogNormalize", scale.factor = 10000)
+```
+
+# Identification of highly variable features (feature selection)
+```{r}
+NP1 <- FindVariableFeatures(NP1, selection.method = "vst", nfeatures = 2000)
+
+## Use “attributes(NP1)” to see the identified VariableFeatures
+
+# Identify the 10 most highly variable genes
+top10 <- head(VariableFeatures(NP1), 10)
+
+# plot variable features with and without labels
+plot1 <- VariableFeaturePlot(NP1)
+plot1
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+plot2
+CombinePlots(plots = list(plot1, plot2))
+```
+
+# Scaling the data for PCA
+
+- Shifts the expression of each gene, so that the mean expression across cells is 0
+- Scales the expression of each gene, so that the variance across cells is 1
+
+```{r}
+all.genes <- rownames(NP1)
+NP1 <- ScaleData(NP1, features = all.genes)
+```
+
+# Run PCA
+
+```{r}
+NP1 <- RunPCA(NP1, features = VariableFeatures(object = NP1))
+
+ElbowPlot(NP1)
+
+## choose PC1-PC10
+```
+
+
+# Cluster the cells 
+
+```{r}
+NP1 <- FindNeighbors(NP1, dims = 1:9)
+NP1 <- FindClusters(NP1, resolution = 0.03)
+##?? how much resolution should I use? We find that setting this parameter between 0.4-1.2 typically returns good results for single-cell datasets of around 3K cells. Optimal resolution often increases for larger datasets.
+
+## First need to use low resolution to identify the big clusters, then classify subsets within each group. 
+head(Idents(NP1), 5)
+
+#Number of communities: 6
+
+```
+
+
+# Run non-linear dimensional reduction (UMAP)
+```{r}
+NP1 <- RunUMAP(NP1, dims = 1:9)
+
+DimPlot(NP1, reduction = "umap")
+```
+
+
+# Run non-linear dimensional reduction (tSNE)
+
+```{r}
+NP1 <- RunTSNE(NP1, dims = 1:9)
+
+DimPlot(NP1, reduction = "tsne")
+
+# Should mainly have three populations: myoepithelial，progenitor，luminal; first identify the marker for each big cluster --> then classify within each cluster
+
+```
+
+
+# Save the object, no need to return later (the end of the file address should be the name of this file)
+```{r}
+saveRDS(NP1, file = "~/data/NP1_tutorial.rds")
+```
+
+
+
+
+```{r}
+NP1 <- readRDS("/home/jianglf/data/NP1_tutorial.rds")
+```
+
+# Find markers for each cluster
+```{r}
+# Find markers for each cluster
+cluster0.markers <- FindMarkers(NP1, ident.1 = 0, min.pct = 0.25, logfc.threshold = 0.4)
+
+cluster0.markers
+
+write.csv(cluster0.markers, file = "~/Lifei Jiang R code/cluster0.markers.csv")
+
+
+# Filename also contain i, need to combine characters and numbers, first define filename
+
+for(i in 0:3){
+ filenames=paste("~/refined_GeneMarkers/cluster", i, ".markers.csv", sep="") 
+ write.csv(FindMarkers(NP1, ident.1=i, min.pct=0.25,logfc.threshold = 1, only.pos = TRUE) ,filenames)
+}
+
+# explore the paste function 
+paste("~/Lifei Jiang R code/cluster", 1, ".markers.csv", sep="")
+paste("A", 1:6, sep="")
+
+# Find all markers for each cluster compared to all the other clusters. only the positive ones
+# Test whether the marker is good, test.use="roc", close to 1 is perfect
+
+
+# library(dplyr)
+NP1.markers <- FindAllMarkers(NP1, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+NP1.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_logFC)
+```
+
+# Plot the logfc and p value distribution for cluster markers
+```{r}
+# 4 clusters (3 main cluster, 1 rare clusters)
+ 
+mlmarkers <- read.csv (file = "~/refined_GeneMarkers/cluster0.markers.csv")
+mlmarkers <- mlmarkers[mlmarkers$p_val_adj<0.05, ]
+str(mlmarkers)#1059
+mlmarkers_Pos <- as.character(mlmarkers[mlmarkers$avg_logFC>0, ]$X)
+basalmarkers <- read.csv (file = "~/refined_GeneMarkers/cluster1.markers.csv")
+basalmarkers <- basalmarkers[basalmarkers$p_val_adj<0.05, ]
+str(basalmarkers)#1139
+basalmarkers_Pos <- as.character(basalmarkers[basalmarkers$avg_logFC>0, ]$X)
+lpmarkers <- read.csv (file = "~/refined_GeneMarkers/cluster2.markers.csv")
+lpmarkers <- lpmarkers[lpmarkers$p_val_adj<0.05, ]
+str(lpmarkers) #671
+lpmarkers_Pos <-as.character(lpmarkers[lpmarkers$avg_logFC>0, ]$X)
+
+raremarkers <- read.csv (file = "~/refined_GeneMarkers/cluster3.markers.csv")
+raremarkers <- raremarkers[raremarkers$p_val_adj<0.05, ]
+str(raremarkers) #671
+raremarkers_Pos <-as.character(raremarkers[raremarkers$avg_logFC>0, ]$X)
+
+
+plot(mlmarkers$p_val_adj, mlmarkers$avg_logFC, main="mlmarkers") #p=0.05, logfc=0.2
+plot(basalmarkers$p_val_adj, basalmarkers$avg_logFC, main="basalmarkers") #p=0.05, logfc=0.2
+plot(lpmarkers$p_val_adj, lpmarkers$avg_logFC, main="lpmarkers") #p=0.05, logfc=0.2
+
+```
+
+#Using heatmap to check the specificity of the data
+```{r}
+#  Create a data object for cluster markers 
+MammaryMarkers <- list("ML"=mlmarkers_Pos,"Basal"=basalmarkers_Pos,"LP"= lpmarkers_Pos,"Rare"=raremarkers_Pos) # using logfc threshold = 1
+
+saveRDS(MammaryMarkers, file="~/data/MammaryMarkers.rds")
+
+
+features.4clusters <- c(mlmarkers_Pos, basalmarkers_Pos, lpmarkers_Pos, raremarkers_Pos)
+DoHeatmap(NP1, features = features.4clusters) + NoLegend()
+```
+
+#Annotation for the big clusters
+```{r}
+
+new.clusterbig.ids <- c("ML", "Basal","LP","Rare1")
+names(new.clusterbig.ids) <- levels(NP1)
+NP1<-RenameIdents(NP1, new.clusterbig.ids)
+
+
+DimPlot(NP1, reduction = "umap", label = TRUE, pt.size = 0.5) + NoLegend()
+```
+
+# First save the current identity
+
+```{r}
+
+NP1[["ClusterNames_0.1"]] <- Idents(object = NP1)
+
+```
+# Save the big clusters 
+```{r}
+saveRDS(NP1, file = "~/data/NP1_tutorial.2.rds")
+```
+
+## Subsetting the data for basal 
+```{r}
+#### ??? 
+
+
+NP1.basal <- subset(NP1,idents="Basal")
+
+DietSeurat(NP1.basal, counts = TRUE, data = TRUE, scale.data = FALSE)
+
+```
+
+# Clusters and markers within the basal group 
+```{r}
+# Quality control 
+# Filter cells:QC and selecting cells for further analysis
+
+
+#add a mt gene percentage colomn, calulate the percentage of MT genes in each cell
+NP1.basal[["percent.mt"]] <- PercentageFeatureSet(NP1.basal, pattern = "^mt-")
+
+VlnPlot(NP1.basal, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+#mt<7%
+#nFeature>500, nFeature< 6000
+
+plot1 <- FeatureScatter(NP1.basal, feature1 = "nFeature_RNA", feature2 = "percent.mt")
+plot1
+plot2 <- FeatureScatter(NP1.basal, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot2
+CombinePlots(plots = list(plot1, plot2))
+
+NP1.basal <- subset(NP1.basal, subset = nFeature_RNA > 500 & nFeature_RNA < 6000 & percent.mt < 7)
+
+# Normalization 
+NP1.basal <- NormalizeData(NP1.basal, normalization.method = "LogNormalize", scale.factor = 1000000)
+
+# Variable feature identification
+
+NP1.basal <- FindVariableFeatures(NP1.basal, selection.method = "vst", nfeatures = 2000)
+
+## Use “attributes(NP1.basal)” to see the identified VariableFeatures
+
+# Identify the 10 most highly variable genes
+top10 <- head(VariableFeatures(NP1.basal), 10)
+
+# plot variable features with and without labels
+plot1 <- VariableFeaturePlot(NP1.basal)
+plot1
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+plot2
+CombinePlots(plots = list(plot1, plot2))
+
+
+# Scale the data 
+all.genes <- rownames(NP1.basal)
+NP1.basal <- ScaleData(NP1.basal, features = all.genes)
+
+
+# Run PCA
+
+NP1.basal <- RunPCA(NP1.basal, features = VariableFeatures(object = NP1.basal))
+
+ElbowPlot(NP1.basal)
+
+## choose PC1-PC10
+
+
+
+NP1.basal <- FindNeighbors(NP1.basal, dims = 1:9)
+NP1.basal <- FindClusters(NP1.basal, resolution = 0.2)
+##?? how much resolution should I use? We find that setting this parameter between 0.4-1.2 typically returns good results for single-cell datasets of around 3K cells. Optimal resolution often increases for larger datasets.
+
+## First need to use low resolution to identify the big clusters, then classify subsets within each group. 
+head(Idents(NP1.basal), 5)
+
+
+NP1.basal <- RunUMAP(NP1.basal, dims = 1:9)
+
+DimPlot(NP1.basal, reduction = "umap")
+
+
+## Identify cluster markers 
+Basal.subset <- FindAllMarkers(NP1.basal,only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+Basal.subset <- Basal.subset[Basal.subset$p_val_adj<0.05, ]
+
+Basal.0 <- Basal.subset[Basal.subset$cluster=="0",]$gene
+Basal.1 <- Basal.subset[Basal.subset$cluster=="1",]$gene
+Basal.2 <- Basal.subset[Basal.subset$cluster=="2",]$gene
+Basal.3 <- Basal.subset[Basal.subset$cluster=="3",]$gene
+
+
+# Quality of identified markers
+Basal.subset <- FindAllMarkers(NP1.basal,only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+DoHeatmap(NP1.basal, features = Basal.subset$gene) + NoLegend()
+
+
+saveRDS(NP1.basal, file="~/data/NP1.basal.rds")
+```
+
+## Find nonoverlapping markers
+```{r}
+# Load the library
+library(limma)
+
+
+# What are the possible letters in the universe?
+universe <- sort(unique(c(Basal.0, Basal.1, Basal.2, Basal.3)))
+
+# Generate a matrix, with the sets in columns and possible letters on rows
+Counts <- matrix(0, nrow=length(universe), ncol=4)
+# Populate the said matrix
+for (i in 1:length(universe)) {
+   Counts[i,1] <- universe[i] %in% Basal.0
+   Counts[i,2] <- universe[i] %in% Basal.1
+   Counts[i,3] <- universe[i] %in% Basal.2
+   Counts[i,4] <- universe[i] %in% Basal.3
+}
+
+# Name the columns with the sample names
+colnames(Counts) <- c("Basal.0", "Basal.1", "Basal.2", "Basal.3")
+
+# Specify the colors for the sets
+cols<-c("Red", "Green", "Blue","Grey")
+vennDiagram(vennCounts(Counts), circle.col=cols)
+
+
+
+
+## Selecting the nonoverlapping genes from each group 
+
+Basal.0 <- Basal.0[which(Basal.0 %in% c(Basal.1, Basal.2, Basal.3) == FALSE)]
+
+write.csv(Basal.0, file = "~/Lifei Jiang R code/Basal0.csv")
+
+Basal.1 <- Basal.1[which(Basal.1 %in% c(Basal.0, Basal.2, Basal.3) == FALSE)]
+write.csv(Basal.1, file = "~/Lifei Jiang R code/Basal1.csv")
+
+Basal.2 <- Basal.2[which(Basal.2 %in% c(Basal.1, Basal.0, Basal.3) == FALSE)]
+write.csv(Basal.2, file = "~/Lifei Jiang R code/Basal2.csv")
+
+Basal.3 <- Basal.3[which(Basal.3 %in% c(Basal.1, Basal.2, Basal.0) == FALSE)]
+write.csv(Basal.3, file = "~/Lifei Jiang R code/Basal3.csv")
+
+Basal.all <- c(Basal.0, Basal.1, Basal.2, Basal.3 )
+
+# Quality of identified markers
+DoHeatmap(NP1.basal, features = Basal.all) + NoLegend()
+DoHeatmap(NP1.basal, features = Basal.2) + NoLegend()
+
+```
+
+# Improve the classification within the Basal subset 
+```{r}
+# Since Cluster1 markers are too few, cannot really be seperated from cluster 0, therefore I decided to reduce the resolution to only include 3 clusters 
+
+NP1.basal <- FindNeighbors(NP1.basal, dims = 1:9)
+NP1.basal <- FindClusters(NP1.basal, resolution = 0.15)
+
+NP1.basal <- RunUMAP(NP1.basal, dims = 1:9)
+
+DimPlot(NP1.basal, reduction = "umap")
+
+## Identify cluster markers 
+Basal.subset <- FindAllMarkers(NP1.basal,only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+Basal.subset <- Basal.subset[Basal.subset$p_val_adj<0.05, ]
+
+Basal.0 <- Basal.subset[Basal.subset$cluster=="0",]$gene
+Basal.1 <- Basal.subset[Basal.subset$cluster=="1",]$gene
+Basal.2 <- Basal.subset[Basal.subset$cluster=="2",]$gene
+
+
+
+# Quality of identified markers
+DoHeatmap(NP1.basal, features = Basal.subset$gene) + NoLegend()
+
+### But I think the heatmap result is no better than 4 clusters 
+
+```
+
+
+```{r}
+readRDS(NP1, file = "~/data/NP1_tutorial.2.rds")
+```
+
+
+
+```{r}
+# Sub clusters within each cluster
+
+# Increase the resolution 
+NP1 <- FindClusters(NP1, resolution = 0.8)
+
+# Plot using Umap
+NP1 <- RunUMAP(NP1, dims = 1:9)
+Idents(NP1)
+DimPlot(NP1, reduction = "umap", pt.size = 0.5) + NoLegend()
+
+
+# Annotation 
+
+new.cluster.ids <- c("Basal1", "ML1", "LP1", "ML2", "ML3", "ML4", "LP2", 
+    "ML5", "Basal2", "Basal3","Rare1", "Rare2", "Rare3")
+names(new.cluster.ids) <- levels(NP1)
+NP1 <- RenameIdents(NP1, new.cluster.ids)
+DimPlot(NP1, reduction = "umap", label = TRUE, pt.size = 0.5) + NoLegend()
+
+## Find all markers 
+Small.Cluster <- FindAllMarkers(NP1, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+Small.Cluster <- Small.Cluster[Small.Cluster$p_val_adj<0.05, ]
+
+str(Small.Cluster)
+
+Small.Cluster.markers <- Small.Cluster$gene
+
+# Identify the markers for sub-clusters
+# 1. basal group
+
+Basal1.markers.3 <- FindMarkers(NP1, ident.1 = "Basal1", ident.2= c("Basal2","Basal3"), min.pct = 0.25,logfc.threshold = 0.2)
+
+write.csv(Basal1.markers.3, file = "~/Lifei Jiang R code/Basal1.markers.3.csv")
+
+Basal2.markers.3 <- FindMarkers(NP1, ident.1 = "Basal2", ident.2= c("Basal1","Basal3"), min.pct = 0.25,logfc.threshold = 0.2)
+
+write.csv(Basal2.markers.3, file = "~/Lifei Jiang R code/Basal2.markers.3.csv")
+
+Basal3.markers.3 <- FindMarkers(NP1, ident.1 = "Basal3", ident.2= c("Basal2","Basal1"), min.pct = 0.25,logfc.threshold = 0.2)
+
+write.csv(Basal3.markers.3, file = "~/Lifei Jiang R code/Basal3.markers.3.csv")
+
+# 2. Mature luminal group: cluster 1,3,4,5,7 
+
+ML1.markers.3 <- FindMarkers(NP1, ident.1 = "ML1", ident.2= c("ML2","ML3", "ML4","ML5"), min.pct = 0.25,logfc.threshold = 0.2)
+write.csv(ML1.markers.3, file = "~/Lifei Jiang R code/ML1.markers.3.csv")
+
+ML2.markers.3 <- FindMarkers(NP1, ident.1 = "ML2", ident.2= c("ML1","ML3", "ML4","ML5"), min.pct = 0.25,logfc.threshold = 0.2)
+write.csv(ML2.markers.3, file = "~/Lifei Jiang R code/ML2.markers.3.csv")
+
+ML3.markers.3 <- FindMarkers(NP1, ident.1 = "ML3", ident.2= c("ML1","ML2", "ML4","ML5"), min.pct = 0.25,logfc.threshold = 0.2)
+write.csv(ML3.markers.3, file = "~/Lifei Jiang R code/ML3.markers.3.csv")
+
+ML4.markers.3 <- FindMarkers(NP1, ident.1 = "ML4", ident.2= c("ML1","ML3", "ML2","ML5"), min.pct = 0.25,logfc.threshold = 0.2)
+write.csv(ML4.markers.3, file = "~/Lifei Jiang R code/ML4.markers.3.csv")
+
+ML5.markers.3 <- FindMarkers(NP1, ident.1 = "ML5", ident.2= c("ML1","ML3", "ML4","ML2"), min.pct = 0.25,logfc.threshold = 0.2)
+write.csv(ML5.markers.3, file = "~/Lifei Jiang R code/ML5.markers.3.csv")
+
+
+# 3. Luminal progenitor group: Cluster 2, 6 
+LP1.markers.3 <- FindMarkers(NP1, ident.1 = "LP1", ident.2= "LP2", min.pct = 0.25,logfc.threshold = 0.2)
+write.csv(LP1.markers.3, file = "~/Lifei Jiang R code/LP1.markers.3.csv")
+
+LP2.markers.3 <- FindMarkers(NP1, ident.1 = "LP2", ident.2= "LP1", min.pct = 0.25,logfc.threshold = 0.2)
+write.csv(LP2.markers.3, file = "~/Lifei Jiang R code/LP2.markers.3.csv")
+
+# Save the identity
+
+NP1[["ClusterNames_0.8"]] <- Idents(object = NP1)
+
+# Can use FeaturePlot to visualize the identified markers
+
+# e.g. FeaturePlot(NP1, features = c("Cxcl14", "Slpi", "Ptn", "Wfdc2", "Wfdc18", "Aldh1a3", "Tagln", "Acta2", 
+   # "Nupr1"))
+
+
+```
+
+
+
+# Save the small clusters 
+```{r}
+saveRDS(NP1, file = "~/data/NP1_tutorial.3.rds")
+```
+
+## Intermeidate resolutions 
+```{r}
+# Sub clusters within each cluster
+
+# Increase the resolution 
+NP1 <- FindClusters(NP1, resolution = 0.7)
+
+# Plot using Umap
+NP1 <- RunUMAP(NP1, dims = 1:9)
+
+DimPlot(NP1, reduction = "umap", pt.size = 0.5,  label = TRUE) + NoLegend()
+
+
+
+
+# Annotation 
+
+new.cluster.ids <- c("Basal1", "ML1", "LP1", "ML2", "ML3", "ML4", "LP2", 
+    "ML5", "Basal2","Rare1", "Rare2", "Rare3")
+names(new.cluster.ids) <- levels(NP1)
+NP1 <- RenameIdents(NP1, new.cluster.ids)
+DimPlot(NP1, reduction = "umap", label = TRUE, pt.size = 0.5) + NoLegend()
+
+
+```
+# Save the intermediate clusters 
+```{r}
+saveRDS(NP1, file = "~/data/NP1_tutorial.4.rds")
+```

@@ -1,0 +1,1968 @@
+---
+title: "Decovolution"
+author: "Lifei Jiang"
+date: "4/23/2020"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+```
+
+# Install packages
+```{r}
+# install devtools if necessary
+# install.packages('devtools')
+
+# install bseqsc
+devtools::install_github('shenorrlab/bseqsc')
+
+# install required packages 
+devtools::install_github('shenorrlab/csSAM')
+
+# load
+library(csSAM)
+library(Rcpp)
+library(bseqsc)
+
+# External code 
+
+
+bseqsc_config('~/CIBERSORT.R')
+
+
+```
+
+# prepare Bulk RNA-seq Datasets
+```{r}
+# Bulk RNA-seq data from TCGA 
+
+BRCA <- readRDS("/home/jianglf/data/TCGA/new/TCGA_BRCA_HTSeq_Normalized_Counts.rds") #23182 rows (gene), 1090 cols (patients)
+
+Clinical <- readRDS("/home/jianglf/data/TCGA/new/BRCA_clinical_data.rds")
+
+
+```
+
+
+# Build a reference matrix based on scRNA-seq data 
+
+```{r}
+MammaryMarkers <- readRDS(file="~/data/MammaryMarkers.rds")
+str(MammaryMarkers) #271
+
+rownames(BRCA) <- lapply(rownames(BRCA), tolower)
+library(lattice)
+library(survival)
+library(Formula)
+library(ggplot2)
+library(Hmisc)
+rownames(BRCA) <- lapply(rownames(BRCA), capitalize)
+
+MammaryMarkers$ML <- Reduce (intersect, list(MammaryMarkers$ML, rownames(BRCA)))
+MammaryMarkers$Basal  <- Reduce (intersect, list(MammaryMarkers$Basal, rownames(BRCA)))
+MammaryMarkers$LP <- Reduce (intersect, list(MammaryMarkers$LP, rownames(BRCA)))
+MammaryMarkers$Rare <- Reduce (intersect, list(MammaryMarkers$Rare, rownames(BRCA)))
+
+
+# Markers can from seurat, but the original data format should be the same with deconvolution 
+
+
+NP1 <- readRDS(file = "~/data/NP1_tutorial.2.rds")
+new.clusterbig.ids <- c("ML", "Basal","LP","Rare")
+names(new.clusterbig.ids) <- levels(NP1)
+
+library(dplyr)
+library(Seurat)
+NP1<-RenameIdents(NP1, new.clusterbig.ids)
+str(Idents(NP1))
+sample <- rep("NP1", length(Idents(NP1)))
+
+
+NP1.matrix <- as(NP1[['RNA']]@counts,"matrix")
+colnames(NP1.matrix) <- Idents(NP1)
+write.table(NP1.matrix, file="~/data/NP1.txt", append = FALSE, sep = " ", dec = ".",
+            row.names = TRUE, col.names = TRUE)
+
+B <- bseqsc_basis(NP1.matrix, MammaryMarkers, clusters = Idents(NP1), samples= sample, ct.scale = TRUE)
+## make sure that the names of MammaryMarkers should be the same with cluster names 
+
+plotBasis(B, MammaryMarkers, Colv = NA, Rowv = NA, col = 'Blues')
+
+
+```
+
+# Preapre files for CIBERSORTx
+```{r}
+# scRNA-seq reference gene siganture matrix 
+NP1 <- readRDS(file = "~/data/NP1_tutorial.2.rds")
+new.clusterbig.ids <- c("ML", "Basal","LP","Rare")
+names(new.clusterbig.ids) <- levels(NP1)
+
+library(dplyr)
+library(Seurat)
+NP1<-RenameIdents(NP1, new.clusterbig.ids)
+str(Idents(NP1))
+
+# Before remove  
+NP1.matrix <- as(2^NP1[['RNA']]@data,"matrix")
+colnames(NP1.matrix) <- Idents(NP1)
+write.table(NP1.matrix, file="~/data/NP1.txt", append = FALSE, sep="\t", 
+            row.names = TRUE, col.names = NA)
+ 
+# remove the rare group 
+NP1.new <- subset(NP1, idents=c("ML","Basal","LP")) #2639 reduced from 2701
+
+NP1.new.matrix <- as(2^NP1.new[['RNA']]@data,"matrix")
+colnames(NP1.new.matrix) <- Idents(NP1.new)
+ write.table(NP1.new.matrix, file="~/data/NP1.3Clusters.txt", append = FALSE, sep="\t", 
+            row.names = TRUE, col.names = NA)
+ 
+## Try to re-run seurat after remove the rare group
+
+DietSeurat(NP1.new, counts = TRUE, data = TRUE, scale.data = FALSE)
+
+NP1.new  <- NormalizeData(NP1.new , normalization.method = "LogNormalize", scale.factor = 1000000)
+
+NP1.new <- FindVariableFeatures(NP1.new, selection.method = "vst", nfeatures = 2000)
+
+all.genes <- rownames(NP1.new)
+NP1.new <- ScaleData(NP1.new, features = all.genes)
+NP1.new <- RunPCA(NP1.new, features = VariableFeatures(object = NP1.new))
+
+ElbowPlot(NP1.new)
+NP1.new <- FindNeighbors(NP1.new, dims = 1:9)
+NP1.new <- FindClusters(NP1.new, resolution = 0.03)
+
+NP1.new <- RunUMAP(NP1.new, dims = 1:9)
+
+DimPlot(NP1.new, reduction = "umap")
+
+NP1.new.markers <- FindAllMarkers(NP1.new,only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+DoHeatmap(NP1.new, features = NP1.new.markers$gene) + NoLegend()
+
+
+## Compare between old and new Idents: conlusion is that they are the same
+NP1.new <- FindClusters(NP1.new, resolution = 0.03)
+NP1.new <- RunUMAP(NP1.new, dims = 1:9)
+DimPlot(NP1.new, reduction = "umap")
+
+Idents(NP1.new) <- colnames(NP1.new.matrix) 
+DimPlot(NP1.new, reduction = "umap")
+```
+
+
+
+# Basal subtypes 
+```{r}
+## Extrac the basal data from original NP1. data
+str(NP1.data)
+str(colnames(NP1[['RNA']]@data))
+
+Basal.ID <- colnames(NP1[['RNA']]@data)[which(colnames(NP1.matrix)=="Basal")]
+
+NP1.basal.data <- NP1.data[, Basal.ID]
+
+NP1.basal.X0X1 <- NP1.basal.data[]
+
+# re-run seurat
+NP1.basal.seurat<- CreateSeuratObject(counts = NP1.basal.data, project = "NP1.basalproject", assay = "RNA", min.cells = 3, min.features = 200)
+
+NP1.basal.seurat  <- NormalizeData(NP1.basal.seurat , normalization.method = "LogNormalize", scale.factor = 10000)
+
+NP1.basal.seurat <- FindVariableFeatures(NP1.basal.seurat, selection.method = "vst", nfeatures = 30000)
+
+all.genes <- rownames(NP1.basal.seurat)
+NP1.basal.seurat <- ScaleData(NP1.basal.seurat, features = all.genes)
+NP1.basal.seurat <- RunPCA(NP1.basal.seurat, features = VariableFeatures(object = NP1.basal.seurat))
+
+ElbowPlot(NP1.basal.seurat)
+NP1.basal.seurat <- FindNeighbors(NP1.basal.seurat, dims = 1:9)
+NP1.basal.seurat <- FindClusters(NP1.basal.seurat, resolution = 0.2)
+
+NP1.basal.seurat <- RunUMAP(NP1.basal.seurat, dims = 1:9)
+
+
+DimPlot(NP1.basal.seurat, reduction = "umap")
+
+Basal.markers <- FindAllMarkers(NP1.basal.seurat,only.pos = TRUE, min.pct = 0.2, logfc.threshold = 0.15)
+
+Basal.markers <- Basal.markers[Basal.markers$p_val_adj<0.05, ]
+DoHeatmap(NP1.basal.seurat, features = Basal.markers$gene) 
+table(Basal.markers$cluster)
+
+write.csv(Basal.markers, file="~/MammaryBasalmarker.2.csv")
+
+new.clusterbig.ids <- c(0,1,2,3)
+names(new.clusterbig.ids) <- levels(NP1.basal.seurat)
+NP1.basal.seurat<-RenameIdents(NP1.basal.seurat, new.clusterbig.ids)
+
+for(i in 0:1){
+ filenames=paste("~/MammaryBasalcluster", i, ".markers.csv", sep="") 
+ write.csv(FindMarkers(NP1.basal.seurat, ident.1=i, test.use="DESeq2") ,filenames)
+}
+
+for(i in 0:3){
+ filenames=paste("~/MammaryBasalcluster", i, ".markers.csv", sep="") 
+ write.csv(FindMarkers(NP1.basal.seurat, ident.1=i) ,filenames)
+}
+
+
+
+new.clusterbig.ids <- c("X0", "X1","X2","X3")
+names(new.clusterbig.ids) <- levels(NP1.basal.seurat)
+NP1.basal.seurat<-RenameIdents(NP1.basal.seurat, new.clusterbig.ids)
+DimPlot(NP1.basal.seurat, reduction = "umap", label=TRUE)+ NoLegend()
+DoHeatmap(NP1.basal.seurat, features = Basal.markers$gene,size=4) 
+```
+
+
+### subseting basal group 
+NP1.basal.seurat.2 <- subset(NP1.basal.seurat, idents=c("X0","X1")) 
+X0X1 <- Idents(NP1.basal.seurat.2)
+DietSeurat(NP1.basal.seurat.2, counts = TRUE, data = TRUE, scale.data = FALSE)
+
+NP1.basal.seurat.2 <- NormalizeData(NP1.basal.seurat.2, normalization.method = "LogNormalize", scale.factor = 10000)
+NP1.basal.seurat.2 <- FindVariableFeatures(NP1.basal.seurat.2, selection.method = "vst", nfeatures = 2000)
+
+
+Idents(NP1.basal.seurat.2)<-X0X1
+ write.csv(FindMarkers(NP1.basal.seurat.2, ident.1="X0") ,"~/MammaryBasalcluster1.markers.csv")
+ 
+  write.csv(FindMarkers(NP1.basal.seurat.2, ident.1="X1") ,"~/MammaryBasalcluster2.markers.csv")
+
+
+
+
+## Mammary basal cells DE markers and GSEA 
+```{r}
+
+devtools::install_github('xzhoulab/iDEA')
+
+library(iDEA)
+
+```
+
+```{r}
+new.clusterbig.ids <- c("X0", "X1","X2","X3")
+names(new.clusterbig.ids) <- levels(NP1.basal.seurat)
+NP1.basal.seurat<-RenameIdents(NP1.basal.seurat, new.clusterbig.ids)
+NP1.basal.matrix <- as(2^NP1.basal.seurat[['RNA']]@data,"matrix")
+
+colnames(NP1.basal.matrix) <- Idents(NP1.basal.seurat)
+write.table(NP1.basal.matrix, file="~/data/NP1.basal.2.txt", append = FALSE, sep="\t", 
+            row.names = TRUE, col.names = NA)
+
+which(duplicated(rownames(NP1.basal.matrix)))
+
+
+# Mixture using bulk RNA-seq 
+
+BRCA.matrix <- as.matrix(BRCA)
+
+colnames(BRCA.matrix) <-  Clinical$BRCA_Subtype_PAM50
+
+str(BRCA.matrix)
+
+rownames(BRCA.matrix) <- lapply(rownames(BRCA.matrix), tolower)
+rownames(BRCA.matrix) <-lapply(rownames(BRCA.matrix), capitalize)
+
+write.table(BRCA.matrix, file="~/data/BRCA.2.txt", append = FALSE, sep="\t",
+            row.names = TRUE, col.names = NA)
+
+# Bulk RNA-seq only containing the basal group
+
+BRCA.basal <- BRCA.matrix[ ,colnames(BRCA.matrix)=="Basal"]
+
+write.table(BRCA.basal, file="~/data/BRCA.basal.txt", append = FALSE, sep="\t",
+            row.names = TRUE, col.names = NA)
+
+
+```
+
+# Cell Fractions from CIBERSORTx: visulization
+```{r}
+
+TCGA.CellFrac <- read.csv("~/data/CIBERSORTx_Job4_Results.csv")
+
+# Change the rownames 
+str(rownames(TCGA.CellFrac))
+head(TCGA.CellFrac)
+Patient.ID <- TCGA.CellFrac$Mixture
+
+LumA <- TCGA.CellFrac[grep("LumA", Patient.ID),]
+LumB <- TCGA.CellFrac[grep("LumB", Patient.ID),]
+Basal <- TCGA.CellFrac[grep("Basal", Patient.ID),]
+Her2 <- TCGA.CellFrac[grep("Her", Patient.ID),]
+Normal <- TCGA.CellFrac[grep("Norm", Patient.ID),]
+
+# Add a coloum about the PAM50 groups 
+TCGA.CellFrac$PAM50 <-rep("PAM50_LumA", length(Patient.ID))
+TCGA.CellFrac$PAM50[grep("LumB", Patient.ID)] <- "PAM50_LumB"
+TCGA.CellFrac$PAM50[grep("Basal", Patient.ID)] <- "PAM50_Basal"
+TCGA.CellFrac$PAM50[grep("Her", Patient.ID)] <- "PAM50_Her2"
+TCGA.CellFrac$PAM50[grep("Norm", Patient.ID)] <- "Normal"
+
+TCGA.CellFrac <- TCGA.CellFrac[-which (TCGA.CellFrac$PAM50=="Normal"), ]
+
+# rownames(TCGA.CellFrac) <- Clinial$PAM50
+
+
+# Compare the same cell population across different subtypes (ANOVA?? check assumptions?? ANOVA with interactions?)
+?boxplot
+# install.packages("ggpubr", repo="http://cran.us.r-project.org")
+library(ggpubr)
+
+
+p <- ggboxplot(TCGA.CellFrac, x="PAM50", y="Basal", xlab="PAM50 Subtypes" , ylab="CellType = Basal", color = "PAM50",
+               palette = "jco", title= "Pertentage of Basal Cells in different PAM50 subtypes") +
+  theme(plot.title = element_text(hjust = 0.5)) 
+
+p+stat_compare_means(method="anova")
+
+
+
+p <- ggboxplot(TCGA.CellFrac, x="PAM50", y="ML", xlab="PAM50 Subtypes" ,ylab="CellType = Mature Luminal", color = "PAM50",
+               palette = "jco", title= "Pertentage of Mature Luminal Cells in different PAM50 subtypes") +
+  theme(plot.title = element_text(hjust = 0.5)) 
+
+p+stat_compare_means(method="anova")
+
+
+p <- ggboxplot(TCGA.CellFrac, x="PAM50", y="LP", xlab="PAM50 Subtypes" ,ylab="CellType = Luminal Progenitor", color = "PAM50",
+               palette = "jco", title= "Pertentage of Luminal Progenitor Cells in different PAM50 subtypes") +
+  theme(plot.title = element_text(hjust = 0.5)) 
+
+p+stat_compare_means(method="anova")
+
+p <- ggboxplot(TCGA.CellFrac, x="PAM50", y="Rare",xlab="PAM50 Subtypes" , ylab="CellType = Rare", color = "PAM50",
+               palette = "jco", title= "Pertentage of Rare Cells in different PAM50 subtypes") +
+  theme(plot.title = element_text(hjust = 0.5)) 
+
+p+stat_compare_means(method="anova")
+```
+
+# Condunct ANOVA
+```{r}
+## Basal 
+model <- aov(Basal~PAM50, data= TCGA.CellFrac) #runs the ANOVA test.
+
+summary(model) #give the basic ANOVA output.
+TukeyHSD(model, ordered = TRUE, conf.level = 0.95)
+
+
+## ML
+model <- aov(ML~PAM50, data= TCGA.CellFrac) #runs the ANOVA test.
+
+summary(model) #give the basic ANOVA output.
+TukeyHSD(model, ordered = TRUE, conf.level = 0.95)
+
+
+## LP 
+model <- aov(LP~PAM50, data= TCGA.CellFrac) #runs the ANOVA test.
+
+summary(model) #give the basic ANOVA output.
+TukeyHSD(model, ordered = TRUE, conf.level = 0.95)
+
+
+## Rare
+model <- aov(Rare~PAM50, data= TCGA.CellFrac) #runs the ANOVA test.
+
+summary(model) #give the basic ANOVA output.
+TukeyHSD(model, ordered = TRUE, conf.level = 0.95)
+```
+
+# (Inter) Average composition of cells within each group (stack bar with error bars or mosaic plot)
+```{r}
+# Long and wide transformation of the data, CellType column. 
+library (reshape2)
+?melt
+TCGA.CellFrac.long <- melt(TCGA.CellFrac, id.vars = c("Mixture", "P.value","Correlation", "RMSE","PAM50"), variable.name = "CellType", value.name = "CellFraction")
+
+ggplot(TCGA.CellFrac.long, aes(x=PAM50, y=CellFraction, fill=CellType)) 
+
+# Add error bar 
+
+library(plyr)
+
+sem <- function(x) sd(x)/sqrt(length(x))
+
+m_mean = ddply(TCGA.CellFrac, "PAM50", summarize, Basal = mean(Basal), LP = mean(LP), ML = mean(ML), Rare=mean(Rare))
+m_devs = ddply(TCGA.CellFrac, "PAM50", summarize, Basal = sem(Basal), LP = sem(LP), ML = sem(ML), Rare=sem(Rare))
+
+table2 = melt(m_mean)
+table3 = melt(m_devs)
+
+colnames(table2)[3] = "Mean"
+colnames(table3)[3] = "SD"
+str(table2)
+table4 = merge(table2, table3)
+colnames(table4)[2] <- "CellType"
+
+table4$y_pos = NA
+table4$y_pos[table4$CellType == "Rare"] = table4$Mean[table4$CellType == "Rare"]
+table4$y_pos[table4$CellType == "ML"] = table4$Mean[table4$CellType == "Rare"] + 
+  table4$Mean[table4$CellType == "ML"]
+table4$y_pos[table4$CellType == "LP"] = table4$y_pos[table4$CellType == "ML"] + 
+  table4$Mean[table4$CellType == "LP"]
+table4$y_pos[table4$CellType == "Basal"] = table4$y_pos[table4$CellType == "LP"] + 
+  table4$Mean[table4$CellType == "Basal"]
+
+ggplot(table4, aes(PAM50, Mean, fill = CellType)) + 
+  geom_bar(stat = "identity") + 
+  geom_errorbar(aes(ymax = y_pos + SD, ymin = y_pos - SD), position = "identity", width = 0.2)
+
+
+# (Intra) Look at the heterogeneity within each subtype 
+
+
+
+# Draw 3D plots, after remove the rare group 
+library(plot3D)
+
+colvar <- c(1,2,3,4,5)[as.factor(TCGA.CellFrac$PAM50)]
+
+
+scatter3D(TCGA.CellFrac$Basal,TCGA.CellFrac$LP,TCGA.CellFrac$ML,colvar=colvar, xlab="CellType_Basal",ylab="CellType_LP",zlab="CellType_ML", type = "p",pch=20,cex=0.5, colkey=FALSE, col=c(1,2,3,4,6))
+
+legend("bottomright", legend = levels(as.factor(TCGA.CellFrac$PAM50)),col=c(1,2,3,4,6)
+     ,pch = 20)
+```
+## 
+## radar chart for all 
+
+```{r}
+library(plotly)
+str(clus.all)
+str(TCGA.CellFrac) # whether contain a coloum for 5 hclust clusters 
+m_mean.all = ddply(TCGA.CellFrac, "PAM50", summarize, Basal = mean(Basal), LP = mean(LP), ML = mean(ML), Rare=mean(Rare))
+
+
+## draw radar chart for newly identified 5 clusters 
+
+
+TCGA.CellFrac$hclust.all <- clus.all
+
+m_mean.all = ddply(TCGA.CellFrac, "hclust.all", summarize, Basal = mean(Basal), LP = mean(LP), ML = mean(ML), Rare=mean(Rare))
+
+fig <- plot_ly(
+    type = 'scatterpolar',
+    fill = 'toself', vlcex=1
+  ) 
+
+r1 <- c(m_mean.all[1,2:5], m_mean.all[1,2])
+names(r1) <- NULL
+fig <- fig %>%
+  add_trace(
+    r = r1,
+     theta = c('Basal', 'LP','ML','Rare', 'Basal'),
+    name = 'Clus1'
+  ) 
+
+fig <- fig %>%
+  layout(
+    polar = list(
+      radialaxis = list(
+        visible = T,
+        range = c(0,0.8)
+      )
+    )
+  )
+
+fig
+
+
+fig <- plot_ly(
+    type = 'scatterpolar',
+    fill = 'toself'
+  ) 
+
+r2 <- c(m_mean.all[2,2:5], m_mean.all[2,2])
+names(r2) <- NULL
+fig <- fig %>%
+  add_trace(
+    r= r2,
+  theta = c('Basal', 'LP','ML','Rare', 'Basal'),
+    name = 'Clus2',
+  color=I("blue")
+  ) 
+
+fig <- fig %>%
+  layout(
+    polar = list(
+      radialaxis = list(
+        visible = T,
+        range = c(0,0.8)
+      )
+    )
+  )
+fig
+
+
+fig <- plot_ly(
+    type = 'scatterpolar',
+    fill = 'toself'
+  ) 
+
+r3 <-c(m_mean.all[3,2:5], m_mean.all[3,2])
+names(r3) <- NULL
+fig <- fig %>%
+  add_trace(
+   r = r3,
+ theta = c('Basal', 'LP','ML','Rare', 'Basal'),
+    name = 'Clus3',
+   color=I("orange")
+  ) 
+
+fig <- fig %>%
+  layout(
+    polar = list(
+      radialaxis = list(
+        visible = T,
+        range = c(0,0.8)
+      )
+    )
+  )
+fig
+
+fig <- plot_ly(
+    type = 'scatterpolar',
+    fill = 'toself'
+  ) 
+
+
+r4 <-c(m_mean.all[4,2:5], m_mean.all[4,2])
+names(r4) <- NULL
+fig <- fig %>%
+  add_trace(
+   r = r4,
+ theta = c('Basal', 'LP','ML','Rare', 'Basal'),
+    name = 'Clus4',
+   color=I("green")
+  ) 
+
+fig <- fig %>%
+  layout(
+    polar = list(
+      radialaxis = list(
+        visible = T,
+        range = c(0,0.8)
+      )
+    )
+  )
+fig
+
+
+```
+
+# Cell Fractions from CIBERSORTx: survival curve analysis 
+```{r}
+# Check the distribution of Basal cell fractions in all patients
+hist(TCGA.CellFrac$Basal)
+
+summary (TCGA.CellFrac$Basal) # Cut off values: 0.2, 0.26, 0.32
+
+
+TCGA.CellFrac <- read.csv("~/data/CIBERSORTx_Job4_Results.csv")
+BasalFrac <- c()
+BasalFrac[which(TCGA.CellFrac$Basal<0.2) ] <-"Basal--"
+BasalFrac[which( TCGA.CellFrac$Basal>0.2)] <-  "Basal-"
+BasalFrac[which(TCGA.CellFrac$Basal>0.26)] <- "Basal+"
+BasalFrac[which(TCGA.CellFrac$Basal>0.32)] <- "Basal++"
+
+BasalFrac[which(TCGA.CellFrac$Basal<0.32) ] <-"Basal--"
+BasalFrac[which(TCGA.CellFrac$Basal>0.32)] <- "Basal++"
+
+# Draw survival curve 
+
+# Install the required packages 
+library(survival)
+library(survminer)
+library(dplyr)
+
+# Fit survival data using the Kaplan-Meier method
+Clinical <- readRDS("/home/jianglf/data/TCGA/new/BRCA_clinical_data.rds")
+
+surv_object <- Surv(time = Clinical$time, event = Clinical$vital_status)
+surv_object 
+
+
+#transform the Clusters into factors with labels
+Clinical$BasalFrac <- factor(BasalFrac, 
+                     levels = c("Basal--","Basal++"))
+
+fit3 <- survfit(surv_object ~BasalFrac, data=Clinical)
+summary(fit3)
+ggsurvplot(fit3, data = Clinical, pval = TRUE)
+
+#### Cannot separate on survival curve 
+
+# Try Luminal propertions 
+hist(TCGA.CellFrac$ML)
+
+summary (TCGA.CellFrac$ML) # Cut off values: 0.25, 0.33, 0.4
+
+
+TCGA.CellFrac <- read.csv("~/data/CIBERSORTx_Job4_Results.csv")
+MLFrac <- c()
+MLFrac[which(TCGA.CellFrac$ML<0.25) ] <-"ML--"
+MLFrac[which( TCGA.CellFrac$ML>0.25)] <-  "ML-"
+# MLFrac[which(TCGA.CellFrac$ML>0.33)] <- "ML+"
+MLFrac[which(TCGA.CellFrac$ML>0.40)] <- "ML++"
+
+
+surv_object <- Surv(time = Clinical$time, event = Clinical$vital_status)
+surv_object 
+
+
+#transform the Clusters into factors with labels
+Clinical$MLFrac <- factor(MLFrac, 
+                     levels = c("ML--","ML-","ML++"))
+
+fit3 <- survfit(surv_object ~MLFrac, data=Clinical)
+summary(fit3)
+ggsurvplot(fit3, data = Clinical, pval = TRUE)
+```
+
+
+# Basal deconvolution 
+```{r}
+Basal.CellFrac <- read.csv("~/Basal_CellFractions.csv")
+
+
+str(Basal.CellFrac)
+
+Basal.CF.matrix <- rbind(Basal.CellFrac$X0,
+Basal.CellFrac$X1,
+Basal.CellFrac$X2,
+Basal.CellFrac$X3)
+
+rownames(Basal.CF.matrix) <- c("X0","X1","X2","X3")
+colnames(Basal.CF.matrix) <- Basal.CellFrac$Mixture
+
+## Draw Heatmaps
+
+# Draw heatmaps
+
+# my_colors <- colorRampPalette(c("cyan", "deeppink3"))
+colors = c(seq(-3,3, length=100))
+
+my_palette <- colorRampPalette(c("green", "black", "red"))
+
+library(gplots)
+
+
+Basal.subtype <- heatmap.2(Basal.CF.matrix, main="BasalFractions",Rowv=TRUE, Colv=TRUE, scale="row",dendrogram='both', col=my_palette,breaks=colors, trace="none")
+
+
+
+Basal.subtype$colInd # a reordered colnames but still keep the original order 
+Basal.subtype
+heatmap.2(Basal.CF.matrix, main="BasalFractions",Rowv=TRUE, Colv=TRUE, scale="row",dendrogram='both', col=my_palette,breaks=colors, trace="none")
+
+ordered.colnames <- colnames(Basal.CF.matrix)[Basal.subtype$colInd]
+
+library(ape)
+library(viper)
+
+plot(Basal.subtype$colDendrogram, labels = F)
+plot(cut(Basal.subtype$colDendrogram, h=0.7)$upper)
+dent <- as.dendrogram(Basal.subtype$colDendrogram)
+
+
+# Repeat what was done within the heatmap function 
+dist.basal <- dist(t(Basal.CF.matrix), method="euclidean")
+hc.basal <- hclust(dist.basal, method = "complete")
+plot(hc.basal,labels=F)
+hcd.basal <- as.dendrogram(hc.basal)
+plot(cut(hcd.basal, h=0.85)$upper)
+clus.basal = cutree(hc.basal, 3)  # contain assigned clusters for each patients based on heatmap results
+clus.basal <- as.factor(clus.basal)
+# assign colsidecolors based on identified clusters 
+
+### A colorful dendrogram 
+# install the package:
+if (!require('dendextend')) install.packages('dendextend')
+library('dendextend')
+
+## Example:
+
+hcd.basal.color=color_branches(hcd.basal,k=3)
+plot(hcd.basal.color)
+```
+
+## radar chart for PAM50 subtypes 
+
+```{r}
+library(plotly)
+
+m_mean.all = ddply(TCGA.CellFrac, "PAM50", summarize, Basal = mean(Basal), LP = mean(LP), ML = mean(ML), Rare=mean(Rare))
+
+fig <- plot_ly(
+    type = 'scatterpolar',
+    fill = 'toself'
+  ) 
+
+r1 <- c(m_mean.all[1,2:5], m_mean.all[1,2])
+names(r1) <- NULL
+fig <- fig %>%
+  add_trace(
+    r = r1,
+    theta = c('Basal', 'LP', 'ML', 'Rare'),
+    name = 'PAM50_Basal',
+    color=I("red")
+  ) 
+fig <- fig %>%
+  layout(
+    polar = list(
+      radialaxis = list(
+        visible = T,
+        range = c(0,0.4)
+      )
+    )
+  )
+
+fig
+
+fig <- plot_ly(
+    type = 'scatterpolar',
+    fill = 'toself'
+  ) 
+
+r2 <- c(m_mean.all[2,2:5], m_mean.all[2,2])
+names(r2) <- NULL
+fig <- fig %>%
+  add_trace(
+    r = r2,
+    theta = c('Basal', 'LP', 'ML', 'Rare'),
+    name = 'PAM50_Her2',
+    color=I("green")
+  ) 
+fig <- fig %>%
+  layout(
+    polar = list(
+      radialaxis = list(
+        visible = T,
+        range = c(0,0.4)
+      )
+    )
+  )
+
+fig
+
+fig <- plot_ly(
+    type = 'scatterpolar',
+    fill = 'toself'
+  ) 
+
+
+r3 <- c(m_mean.all[3,2:5], m_mean.all[3,2])
+names(r3) <- NULL
+fig <- fig %>%
+  add_trace(
+    r = r3,
+    theta = c('Basal', 'LP', 'ML', 'Rare'),
+    name = 'PAM50_LumA',
+    color=I("blue")
+  ) 
+fig <- fig %>%
+  layout(
+    polar = list(
+      radialaxis = list(
+        visible = T,
+        range = c(0,0.4)
+      )
+    )
+  )
+
+fig
+
+fig <- plot_ly(
+    type = 'scatterpolar',
+    fill = 'toself'
+  ) 
+
+
+r4 <- c(m_mean.all[4,2:5], m_mean.all[4,2])
+names(r4) <- NULL
+fig <- fig %>%
+  add_trace(
+    r = r4,
+    theta = c('Basal', 'LP', 'ML', 'Rare'),
+    name = 'PAM50_LumB',
+    color=I("purple")
+  ) 
+fig <- fig %>%
+  layout(
+    polar = list(
+      radialaxis = list(
+        visible = T,
+        range = c(0,0.4)
+      )
+    )
+  )
+
+fig
+
+```
+#######
+
+
+# Radar chart for basal subtypes 
+```{r}
+
+m_mean.basal = ddply(Basal.CellFrac, "BasalLikePatientsSubtype", summarize, X0 = mean(X0), X1 = mean(X1), X2 = mean(X2), X3 =mean(X3))
+
+fig <- plot_ly(
+    type = 'scatterpolar',
+    fill = 'toself'
+  ) 
+
+r1 <- c(m_mean.basal[1,2:5], m_mean.basal[1,2])
+names(r1) <- NULL
+fig <- fig %>%
+  add_trace(
+    r = r1,
+    theta = c('X0', 'X1','X2','X3', 'X0'),
+    name = 'PAM50_BasalLike1',
+    color=I("blue")
+  ) 
+
+fig <- fig %>%
+  layout(
+    polar = list(
+      radialaxis = list(
+        visible = T,
+        range = c(0,0.8)
+      )
+    )
+  )
+
+fig
+
+fig <- plot_ly(
+    type = 'scatterpolar',
+    fill = 'toself'
+  ) 
+
+r2 <- c(m_mean.basal[2,2:5], m_mean.basal[2,2])
+names(r2) <- NULL
+fig <- fig %>%
+  add_trace(
+    r = r2,
+    theta = c('X0', 'X1','X2','X3', 'X0'),
+    name = 'PAM50_BasalLike2',
+    color=I("red")
+  ) 
+fig <- fig %>%
+  layout(
+    polar = list(
+      radialaxis = list(
+        visible = T,
+        range = c(0,0.8)
+      )
+    )
+  )
+
+fig
+
+
+fig <- plot_ly(
+    type = 'scatterpolar',
+    fill = 'toself'
+  ) 
+r3 <-c(m_mean.basal[3,2:5], m_mean.basal[3,2])
+names(r3) <- NULL
+fig <- fig %>%
+  add_trace(
+   r = r3,
+    theta = c('X0', 'X1','X2','X3', 'X0'),
+    name = 'PAM50_BasalLike3',
+   color=I("green")
+  ) 
+fig <- fig %>%
+  layout(
+    polar = list(
+      radialaxis = list(
+        visible = T,
+        range = c(0,0.8)
+      )
+    )
+  )
+
+fig
+
+
+
+library(gplots)
+basal.cluster.color <- c("red", "orange","green")[clus.basal]
+heatmap.2(Basal.CF.matrix, main="BasalFractions",Rowv=TRUE, Colv=TRUE, scale="row",dendrogram='both', col=my_palette,breaks=colors, trace="none",ColSideColors = basal.cluster.color )
+
+# Draw survival curve 
+
+library(survival)
+library(survminer)
+library(dplyr)
+surv_object <- Surv(time = Clinical_Basal$time, event = Clinical_Basal$vital_status)
+surv_object 
+
+# Transform the Clusters into factors with labels
+Clinical_Basal$Basal.clus <- factor(clus.basal, 
+                     levels = c("2","3","1"))
+
+fit3 <- survfit(surv_object ~Basal.clus, data=Clinical_Basal)
+summary(fit3)
+ggsurvplot(fit3, data = Clinical_Basal, pval = TRUE)
+
+
+
+# Determine the number of clusters
+#devtools::install_url("https://github.com/wilkelab/cowplot/archive/0.6.3.zip")
+#if(!require(devtools)) install.packages('devtools')
+#if(!require(factoextra)) devtools::install_github('kassambara/factoextra')
+
+# install.packages("NbClust")
+library(factoextra)
+library(cluster)
+library(NbClust)
+
+Nbclust.basal<-NbClust(t(Basal.CF.matrix), distance = "euclidean", min.nc=1, max.nc=14, 
+            method = "complete", index = "ch")
+fviz_nbclust(Nbclust.basal, hcut, method='silhouette',hc_method='complete') # best number of clusters=3
+
+
+```
+## Basal, compare with direct clustering using basal RNA-seq data 
+```{r}
+
+BRCA.basal
+# Conduct hclust
+BRCA.basal.matrix <- as.matrix(BRCA.basal)
+dist.BRCA.basal <- dist(t(BRCA.basal.matrix), method="euclidean")
+
+
+
+hc.BRCA.basal <- hclust(dist.BRCA.basal, method = "complete")
+plot(hc.BRCA.basal,labels=F)
+
+hcd.BRCA.basal <- as.dendrogram(hc.BRCA.basal)
+
+clus.BRCA.basal = cutree(hc.BRCA.basal, 3)
+
+### A colorful dendrogram 
+# install the package:
+if (!require('dendextend')) install.packages('dendextend')
+library('dendextend')
+
+## Example:
+
+hcd.BRCA.basal.color=color_branches(hcd.BRCA.basal,k=3)
+plot(hcd.BRCA.basal.color)
+
+## Correlation between two classification methods, mosaic plot 
+
+Clusters_BasalLike <- table(clus.basal, clus.BRCA.basal
+               )
+
+mosaicplot(Clusters_BasalLike, main = "Clusters of PAM50_BasalLike",
+           xlab = "Based on Cell Fractions",
+           ylab = "Based on RNA-seq data",
+           las = 1,
+           color = "skyblue2",
+           border = "chocolate")
+
+## Survival curve 
+
+library(survival)
+library(survminer)
+library(dplyr)
+surv_object <- Surv(time = Clinical_Basal$time, event = Clinical_Basal$vital_status)
+surv_object 
+
+# Transform the Clusters into factors with labels
+Clinical_Basal$Basal.BRCA.clus <- factor(clus.BRCA.basal, 
+                     levels = c("1","2","3"))
+
+fit3 <- survfit(surv_object ~Basal.BRCA.clus, data=Clinical_Basal)
+summary(fit3)
+ggsurvplot(fit3, data = Clinical_Basal, pval = TRUE)
+
+```
+
+```{r}
+## Increase the number of clusters.... 
+clus.BRCA.basal = cutree(hc.BRCA.basal, 5)
+
+### A colorful dendrogram 
+# install the package:
+if (!require('dendextend')) install.packages('dendextend')
+library('dendextend')
+
+## Example:
+
+hcd.BRCA.basal.color=color_branches(hcd.BRCA.basal,k=5)
+plot(hcd.BRCA.basal.color)
+
+## Correlation between two classification methods, mosaic plot 
+
+Clusters_BasalLike <- table(clus.basal, clus.BRCA.basal
+               )
+
+mosaicplot(Clusters_BasalLike, main = "Clusters of PAM50_BasalLike",
+           xlab = "Based on Cell Fractions",
+           ylab = "Based on RNA-seq data",
+           las = 1,
+           color = "skyblue2",
+           border = "chocolate")
+
+## Survival curve 
+
+library(survival)
+library(survminer)
+library(dplyr)
+surv_object <- Surv(time = Clinical_Basal$time, event = Clinical_Basal$vital_status)
+surv_object 
+
+# Transform the Clusters into factors with labels
+Clinical_Basal$Basal.BRCA.clus <- factor(clus.BRCA.basal, 
+                     levels = c("1","2","3","4","5"))
+
+fit3 <- survfit(surv_object ~Basal.BRCA.clus, data=Clinical_Basal)
+summary(fit3)
+ggsurvplot(fit3, data = Clinical_Basal, pval = TRUE)
+```
+
+# Basal boxplot + mosaic plot (correlation with cell types) visulization 
+```{r}
+
+Basal.CellFrac <- read.csv("~/Basal_CellFractions.csv")
+
+Basal.CellFrac$BasalLikePatientsSubtype <- clus.basal
+
+str(Basal.CellFrac)
+
+Basal.CF.matrix <- rbind(Basal.CellFrac$X0,
+Basal.CellFrac$X1,
+Basal.CellFrac$X2,
+Basal.CellFrac$X3)
+
+rownames(Basal.CF.matrix) <- c("X0","X1","X2","X3")
+colnames(Basal.CF.matrix) <- Basal.CellFrac$Mixture
+
+
+# Compare the same cell population across different subtypes (ANOVA?? check assumptions?? ANOVA with interactions?)
+?boxplot
+# install.packages("ggpubr", repo="http://cran.us.r-project.org")
+library(ggpubr)
+
+
+p <- ggboxplot(Basal.CellFrac, x="BasalLikePatientsSubtype", y="X0", ylab="BasalCellType = X0", color = "BasalLikePatientsSubtype",
+               palette = "jco", title="Distribution of Basal Cell type X0 ") 
+
+p+stat_compare_means(method="anova")
+
+p <- ggboxplot(Basal.CellFrac, x="BasalLikePatientsSubtype", y="X1", ylab="BasalCellType = X1", color = "BasalLikePatientsSubtype",
+               palette = "jco", title="Distribution of Basal Cell type X1 ") 
+
+p+stat_compare_means(method="anova")
+
+p <- ggboxplot(Basal.CellFrac, x="BasalLikePatientsSubtype", y="X2", ylab="BasalCellType = X2", color = "BasalLikePatientsSubtype",
+               palette = "jco", title="Distribution of Basal Cell type X2 ") 
+
+p+stat_compare_means(method="anova")
+
+p <- ggboxplot(Basal.CellFrac, x="BasalLikePatientsSubtype", y="X3", ylab="BasalCellType = X3", color = "BasalLikePatientsSubtype",
+               palette = "jco", title="Distribution of Basal Cell type X3 ") 
+
+p+stat_compare_means(method="anova")
+
+
+##
+
+
+# Condunct ANOVA
+
+## X0
+model <- aov(X0~BasalLikePatientsSubtype, data= Basal.CellFrac) #runs the ANOVA test.
+
+summary(model) #give the basic ANOVA output.
+TukeyHSD(model, ordered = TRUE, conf.level = 0.95)
+
+##X1
+model <- aov(X1~BasalLikePatientsSubtype, data= Basal.CellFrac) #runs the ANOVA test.
+
+summary(model) #give the basic ANOVA output.
+TukeyHSD(model, ordered = TRUE, conf.level = 0.95)
+
+
+##X2
+model <- aov(X2~BasalLikePatientsSubtype, data= Basal.CellFrac) #runs the ANOVA test.
+
+summary(model) #give the basic ANOVA output.
+TukeyHSD(model, ordered = TRUE, conf.level = 0.95)
+
+##X3
+model <- aov(X3~BasalLikePatientsSubtype, data= Basal.CellFrac) #runs the ANOVA test.
+
+summary(model) #give the basic ANOVA output.
+TukeyHSD(model, ordered = TRUE, conf.level = 0.95)
+```
+
+### CellFractions in each patient group (ALL PAM50)
+```{r}
+
+TCGA.CellFrac <- read.csv("~/data/CIBERSORTx_Job4_Results.csv")
+TCGA.CellFrac.matrix <- rbind(TCGA.CellFrac$Basal, TCGA.CellFrac$LP, TCGA.CellFrac$ML, TCGA.CellFrac$Rare)
+rownames(TCGA.CellFrac.matrix) <- c("Basal","LP","ML","Rare")
+
+## transform
+
+colnames(TCGA.CellFrac.matrix) <- Clinical$BRCA_Subtype_PAM50
+
+All.CF.matrix.df <- as.data.frame(t(TCGA.CellFrac.matrix))
+All.CF.matrix.df$PAM50Subtype <- Clinical$BRCA_Subtype_PAM50
+
+library(reshape2)
+All.CF.matrix.df.long <- melt(All.CF.matrix.df, measure.vars = c("Basal","LP","ML","Rare"), variable.name = "CellType", value.name = "CellFraction")
+
+## Boxplot
+All.CF.matrix.df.long.Basal <- All.CF.matrix.df.long[All.CF.matrix.df.long$PAM50Subtype=="Basal", ]
+
+
+p <- ggboxplot(All.CF.matrix.df.long.Basal, x="CellType", y="CellFraction", ylab="CellFraction", color = "CellType",
+               palette = "jco", title="Cell Fraction in PAM50 Basal Subtype") 
+
+p+stat_compare_means(method="anova")
+
+## Boxplot
+All.CF.matrix.df.long.LumA <- All.CF.matrix.df.long[All.CF.matrix.df.long$PAM50Subtype=="LumA", ]
+
+
+p <- ggboxplot(All.CF.matrix.df.long.LumA, x="CellType", y="CellFraction", ylab="CellFraction", color = "CellType",
+               palette = "jco", title="Cell Fraction in PAM50 LumA Subtype") 
+
+p+stat_compare_means(method="anova")
+
+## Boxplot
+All.CF.matrix.df.long.LumB <- All.CF.matrix.df.long[All.CF.matrix.df.long$PAM50Subtype=="LumB", ]
+
+
+p <- ggboxplot(All.CF.matrix.df.long.LumB, x="CellType", y="CellFraction", ylab="CellFraction", color = "CellType",
+               palette = "jco", title="Cell Fraction in PAM50 LumB Subtype") 
+
+p+stat_compare_means(method="anova")
+
+## Boxplot
+All.CF.matrix.df.long.Her2 <- All.CF.matrix.df.long[All.CF.matrix.df.long$PAM50Subtype=="Her2", ]
+
+
+p <- ggboxplot(All.CF.matrix.df.long.Her2, x="CellType", y="CellFraction", ylab="CellFraction", color = "CellType",
+               palette = "jco", title="Cell Fraction in PAM50 Her2 Subtype") 
+
+p+stat_compare_means(method="anova")
+
+## Boxplot
+All.CF.matrix.df.long.Normal <- All.CF.matrix.df.long[All.CF.matrix.df.long$PAM50Subtype=="Normal", ]
+
+
+p <- ggboxplot(All.CF.matrix.df.long.Normal, x="CellType", y="CellFraction", ylab="CellFraction", color = "CellType",
+               palette = "jco", title="Cell Fraction in PAM50 Normal Subtype") 
+
+p+stat_compare_means(method="anova")
+
+```
+
+### CellFractions in each patient group (Basal)
+```{r}
+## transform
+
+str(Basal.CF.matrix)
+colnames(Basal.CF.matrix) <- clus.basal
+
+Basal.CF.matrix.df <- as.data.frame(t(Basal.CF.matrix))
+Basal.CF.matrix.df$PatientSubtype <- clus.basal
+
+library(reshape2)
+Basal.CF.matrix.df.long <- melt(Basal.CF.matrix.df, measure.vars = c("X0","X1","X2","X3"), variable.name = "CellType", value.name = "CellFraction")
+
+## Boxplot
+Basal.CF.matrix.df.long.1 <- Basal.CF.matrix.df.long[Basal.CF.matrix.df.long$PatientSubtype=="1", ]
+
+
+p <- ggboxplot(Basal.CF.matrix.df.long.1, x="CellType", y="CellFraction", ylab="CellFraction", color = "CellType",
+               palette = "jco", title="Cell Fraction in Patient Subtype 1") 
+
+p+stat_compare_means(method="anova")
+
+## Boxplot
+Basal.CF.matrix.df.long.2 <- Basal.CF.matrix.df.long[Basal.CF.matrix.df.long$PatientSubtype=="2", ]
+
+
+p <- ggboxplot(Basal.CF.matrix.df.long.2, x="CellType", y="CellFraction", ylab="CellFraction", color = "CellType",
+               palette = "jco", title="Cell Fraction in Patient Subtype 2") 
+
+p+stat_compare_means(method="anova")
+
+## Boxplot
+Basal.CF.matrix.df.long.3 <- Basal.CF.matrix.df.long[Basal.CF.matrix.df.long$PatientSubtype=="3", ]
+
+
+p <- ggboxplot(Basal.CF.matrix.df.long.3, x="CellType", y="CellFraction", ylab="CellFraction", color = "CellType",
+               palette = "jco", title="Cell Fraction in Patient Subtype 3") 
+
+p+stat_compare_means(method="anova")
+
+```
+
+## Correlation: Mosaic plot for all patients 
+```{r}
+
+## To look at the correlation between two ways of classification 
+
+CellFractions_PAM50 <- table(Clinical$BRCA_Subtype_PAM50, clus.all
+               )
+
+mosaicplot(CellFractions_PAM50, main = "Cell Fractions in PAM50 groups",
+           xlab = "PAM50_Groups",
+           ylab = "CellTypes",
+           las = 1,
+           color = "skyblue2",
+           border = "chocolate")
+
+
+# Draw survival curve for selected groups /25 groups 
+# Draw survival curve 
+
+Clinical_Basal 
+clus.all_Basal <- clus.all[Clinical$BRCA_Subtype_PAM50=="Basal"]
+
+Clinical_LumA <- Clinical[Clinical$BRCA_Subtype_PAM50=="LumA", ]
+clus.all_LumA <- clus.all[ Clinical$BRCA_Subtype_PAM50=="LumA" ]
+
+
+## survival curve for Basal patients based on different cell compositions
+surv_object <- Surv(time = Clinical_Basal$time, event = Clinical_Basal$vital_status)
+surv_object 
+
+# Transform the Clusters into factors with labels
+Clinical_Basal$All.clus <- factor(clus.all_Basal, 
+                     levels = c("1","2","3","4","5"))
+
+fit3 <- survfit(surv_object ~All.clus, data=Clinical_Basal)
+summary(fit3)
+ggsurvplot(fit3, data = Clinical_Basal, pval = TRUE)
+
+## survival curve for LumA patients based on different cell compositions
+surv_object <- Surv(time = Clinical_LumA$time, event = Clinical_LumA$vital_status)
+surv_object 
+
+# Transform the Clusters into factors with labels
+Clinical_LumA$All.clus <- factor(clus.all_LumA, 
+                     levels = c("1","2","3","4","5"))
+
+fit3 <- survfit(surv_object ~All.clus, data=Clinical_LumA)
+summary(fit3)
+ggsurvplot(fit3, data = Clinical_LumA, pval = TRUE)
+
+### After adjusted for cell compositions, further looked at the molecualr feature differences? 
+
+## For clus1 patients in different PAM50 groups. 
+Clinical_clus1 <- Clinical[ clus.all=="1" ,]
+
+surv_object <- Surv(time = Clinical_clus1$time, event = Clinical_clus1$vital_status)
+surv_object 
+
+BRCA_Subtype_PAM50_clus1 <- Clinical$BRCA_Subtype_PAM50[clus.all=="1"]
+
+# Transform the Clusters into factors with labels 
+Clinical_clus1$All.clus <- factor(BRCA_Subtype_PAM50_clus1, 
+                     levels = c("LumA","LumB","Basal","Her2","Normal"))
+
+fit3 <- survfit(surv_object ~All.clus, data=Clinical_clus1)
+summary(fit3)
+ggsurvplot(fit3, data = Clinical_clus1, pval = TRUE)
+
+
+## For clus2 patients in different PAM50 groups. 
+Clinical_clus2 <- Clinical[ clus.all=="2" ,]
+
+surv_object <- Surv(time = Clinical_clus2$time, event = Clinical_clus2$vital_status)
+surv_object 
+
+BRCA_Subtype_PAM50_clus2 <- Clinical$BRCA_Subtype_PAM50[clus.all=="2"]
+
+# Transform the Clusters into factors with labels 
+Clinical_clus2$All.clus <- factor(BRCA_Subtype_PAM50_clus2, 
+                     levels = c("LumA","LumB","Basal","Her2","Normal"))
+
+fit3 <- survfit(surv_object ~All.clus, data=Clinical_clus2)
+summary(fit3)
+ggsurvplot(fit3, data = Clinical_clus2, pval = TRUE)
+
+
+
+## For clus3 patients in different PAM50 groups. 
+Clinical_clus3 <- Clinical[ clus.all=="3" ,]
+
+surv_object <- Surv(time = Clinical_clus3$time, event = Clinical_clus3$vital_status)
+surv_object 
+
+BRCA_Subtype_PAM50_clus3 <- Clinical$BRCA_Subtype_PAM50[clus.all=="3"]
+
+# Transform the Clusters into factors with labels 
+Clinical_clus3$All.clus <- factor(BRCA_Subtype_PAM50_clus3, 
+                     levels = c("LumA","LumB","Basal","Her2","Normal"))
+
+fit3 <- survfit(surv_object ~All.clus, data=Clinical_clus3)
+summary(fit3)
+ggsurvplot(fit3, data = Clinical_clus3, pval = TRUE)
+
+## For clus4 patients in different PAM50 groups. 
+Clinical_clus4 <- Clinical[ clus.all=="4" ,]
+
+surv_object <- Surv(time = Clinical_clus4$time, event = Clinical_clus4$vital_status)
+surv_object 
+
+BRCA_Subtype_PAM50_clus4 <- Clinical$BRCA_Subtype_PAM50[clus.all=="4"]
+
+# Transform the Clusters into factors with labels 
+Clinical_clus4$All.clus <- factor(BRCA_Subtype_PAM50_clus4, 
+                     levels = c("LumA","LumB","Basal","Her2","Normal"))
+
+fit4 <- survfit(surv_object ~All.clus, data=Clinical_clus4)
+summary(fit4)
+ggsurvplot(fit4, data = Clinical_clus4, pval = TRUE)
+
+
+## For clus5 patients in different PAM50 groups. 
+Clinical_clus5 <- Clinical[ clus.all=="5" ,]
+
+surv_object <- Surv(time = Clinical_clus5$time, event = Clinical_clus5$vital_status)
+surv_object 
+
+BRCA_Subtype_PAM50_clus5 <- Clinical$BRCA_Subtype_PAM50[clus.all=="5"]
+
+# Transform the Clusters into factors with labels 
+Clinical_clus5$All.clus <- factor(BRCA_Subtype_PAM50_clus5, 
+                     levels = c("LumA","LumB","Basal","Her2","Normal"))
+
+fit5 <- survfit(surv_object ~All.clus, data=Clinical_clus5)
+summary(fit5)
+ggsurvplot(fit5, data = Clinical_clus5, pval = TRUE)
+
+
+```
+
+
+
+# Deconvlution of all patients 
+```{r}
+All.CellFrac <- read.csv("~/data/NP1_3Clusters_Fraction.csv")
+
+str(All.CellFrac)
+
+Clinical <- readRDS("/home/jianglf/data/TCGA/new/BRCA_clinical_data.rds")
+
+
+
+All.CellFrac <- All.CellFrac[-which(Clinical$BRCA_Subtype_PAM50=="Normal"), ]
+
+Clinical <- Clinical [-which(Clinical$BRCA_Subtype_PAM50=="Normal"), ]
+
+All.CellFrac.matrix <- as.matrix(rbind(All.CellFrac$Basal,
+All.CellFrac$LP,
+All.CellFrac$ML))
+
+rownames(All.CellFrac.matrix) <- c("Basal","LP","ML")
+
+colnames(All.CellFrac.matrix) <- All.CellFrac$Mixture
+library(ape)
+library(viper)
+
+# Repeat what was done within the heatmap function 
+dist.all <- dist(t(All.CellFrac.matrix), method="euclidean")
+hc.all <- hclust(dist.all, method = "complete")
+plot(hc.all,labels=F)
+hcd.all <- as.dendrogram(hc.all)
+
+```
+
+```{r}
+# 4 Clusters
+clus.all = cutree(hc.all, 4)  # contain assigned clusters for each patients based on heatmap results
+clus.all <- as.factor(clus.all)
+# assign colsidecolors based on identified clusters 
+
+# Draw survival curve 
+surv_object <- Surv(time = Clinical$time, event = Clinical$vital_status)
+surv_object 
+
+# Transform the Clusters into factors with labels
+Clinical$All.clus <- factor(clus.all, 
+                     levels = c("1","2","4","3"))
+
+fit3 <- survfit(surv_object ~All.clus, data=Clinical)
+summary(fit3)
+ggsurvplot(fit3, data = Clinical, pval = TRUE)
+```
+
+Clinical$PAM50 <- Clinical$BRCA_Subtype_PAM50
+fit3 <- survfit(surv_object ~ PAM50, data=Clinical)
+summary(fit3)
+ggsurvplot(fit3, data = Clinical, pval = TRUE)
+
+```
+
+### A colorful dendrogram 
+# install the package:
+if (!require('dendextend')) install.packages('dendextend')
+library('dendextend')
+
+## Example:
+
+hc.all.color=color_branches(hc.all,k=4)
+plot(hc.all.color)
+
+
+
+# Determine the optimal number of clusters 
+Nbclust.all<-NbClust(t(All.CellFrac.matrix), distance = "euclidean", min.nc=1, max.nc=14, 
+            method = "complete", index = "ch")
+fviz_nbclust(Nbclust.all, hcut, method='silhouette',hc_method='complete') # best number of clusters=9
+
+#  First use the optimal number of clusters (when compare with PAM50, use 5 clusters)
+#9 clusters 
+clus.all = cutree(hc.all, 9)  # contain assigned clusters for each patients based on heatmap results
+clus.all <- as.factor(clus.all)
+# assign colsidecolors based on identified clusters 
+
+all.cluster.color <- c("red", "orange","green","yellow","grey","darkblue","blue","brown","pink")[clus.all]
+heatmap.2(All.CellFrac.matrix, main="BasalFractions",Rowv=TRUE, Colv=TRUE, scale="row",dendrogram='both', col=my_palette,breaks=colors, trace="none",ColSideColors = all.cluster.color,cexCol = 0.8, cexRow = 1.5)
+
+# Draw survival curve 
+surv_object <- Surv(time = Clinical$time, event = Clinical$vital_status)
+surv_object 
+
+# Transform the Clusters into factors with labels
+Clinical$All.clus <- factor(clus.all, 
+                     levels = c("1","2","3","4","5","6","7","8","9"))
+
+fit3 <- survfit(surv_object ~All.clus, data=Clinical)
+summary(fit3)
+ggsurvplot(fit3, data = Clinical, pval = TRUE)
+
+
+
+# Draw heatmaps 
+
+All.CellFrac.matrix <- as.matrix(rbind(All.CellFrac$Basal,
+All.CellFrac$LP,
+All.CellFrac$ML))
+
+rownames(All.CellFrac.matrix) <- c("Basal","LP","ML")
+
+colnames(All.CellFrac.matrix) <- All.CellFrac$Mixture
+
+
+# my_colors <- colorRampPalette(c("cyan", "deeppink3"))
+colors = c(seq(-2,2, length=50))
+
+my_palette <- colorRampPalette(c("green", "black", "red"))
+
+library(gplots)
+
+
+heatmap.2(All.CellFrac.matrix, main="BasalFractions",Rowv=TRUE, Colv=TRUE,dendrogram='both', scale="row" ,col=my_palette,breaks=colors, trace="none",cexCol = 0.8, cexRow = 1.5)
+
+
+
+```
+
+## Plot heatmap with sorted PAM50 clusters, see the composition of each cluster... 
+```{r}
+
+colnames(All.CellFrac.matrix) <- Clinical$BRCA_Subtype_PAM50
+All.CellFrac.matrix.order <- All.CellFrac.matrix[ , order(colnames(All.CellFrac.matrix))]
+
+colsidecolors.PAM50 <- c("red","blue","green","grey","orange")[as.factor(colnames(All.CellFrac.matrix.order))]
+heatmap.2(All.CellFrac.matrix.order, main="CellFractions",Rowv=FALSE, Colv=FALSE,dendrogram='none', scale="row" ,col=my_palette,breaks=colors, trace="none",cexCol = 0.8, cexRow = 1.5, ColSideColors = colsidecolors.PAM50)
+
+```
+
+## For labels of colsidebar, can be added mannually... 
+## Draw a pie chart 
+```{r}
+Clinical$BRCA_Subtype_PAM50
+
+clus.LumA <- clus.all[Clinical$BRCA_Subtype_PAM50=="LumA"]
+clus.LumB <- clus.all[Clinical$BRCA_Subtype_PAM50=="LumB"]
+clus.Normal <- clus.all[Clinical$BRCA_Subtype_PAM50=="Normal"]
+clus.Her2 <- clus.all[Clinical$BRCA_Subtype_PAM50=="Her2"]
+clus.Basal <- clus.all[Clinical$BRCA_Subtype_PAM50=="Basal"]
+
+# Clus.all="1"
+clus1.LumA <- clus.LumA[clus.LumA=="1"]
+clus1.LumB <- clus.LumB[clus.LumB=="1"]
+clus1.Basal <- clus.Basal[clus.Basal=="1"]
+clus1.Her2 <- clus.Her2[clus.Her2=="1"]
+clus1.Normal<- clus.Normal[clus.Normal=="1"]
+
+## Pie chart 
+Group <- c("LumA", "LumB", "Basal", "Her2","Normal")
+
+vol.1 <- c(length(clus1.LumA), length(clus1.LumB), length(clus1.Basal), length(clus1.Her2), length(clus1.Normal))
+
+pie(x=vol.1, labels = Group, radius = 1,main = "PAM50 composition of clus1", clockwise = T)
+
+
+
+# Clus.all="2"
+clus2.LumA <- clus.LumA[clus.LumA=="2"]
+clus2.LumB <- clus.LumB[clus.LumB=="2"]
+clus2.Basal <- clus.Basal[clus.Basal=="2"]
+clus2.Her2 <- clus.Her2[clus.Her2=="2"]
+clus2.Normal<- clus.Normal[clus.Normal=="2"]
+
+## Pie chart 
+Group <- c("LumA", "LumB", "Basal", "Her2","Normal")
+
+vol.2 <- c(length(clus2.LumA), length(clus2.LumB), length(clus2.Basal), length(clus2.Her2), length(clus2.Normal))
+
+pie(x=vol.2, labels = Group, radius = 1,main = "PAM50 composition of clus2", clockwise = T)
+
+# Clus.all="3"
+clus3.LumA <- clus.LumA[clus.LumA=="3"]
+clus3.LumB <- clus.LumB[clus.LumB=="3"]
+clus3.Basal <- clus.Basal[clus.Basal=="3"]
+clus3.Her2 <- clus.Her2[clus.Her2=="3"]
+clus3.Normal<- clus.Normal[clus.Normal=="3"]
+
+## Pie chart 
+Group <- c("LumA", "LumB", "Basal", "Her2","Normal")
+
+vol.3 <- c(length(clus3.LumA), length(clus3.LumB), length(clus3.Basal), length(clus3.Her2), length(clus3.Normal))
+
+pie(x=vol.3, labels = Group, radius = 1,main = "PAM50 composition of clus3", clockwise = T)
+
+# Clus.all="4"
+clus4.LumA <- clus.LumA[clus.LumA=="4"]
+clus4.LumB <- clus.LumB[clus.LumB=="4"]
+clus4.Basal <- clus.Basal[clus.Basal=="4"]
+clus4.Her2 <- clus.Her2[clus.Her2=="4"]
+clus4.Normal<- clus.Normal[clus.Normal=="4"]
+
+## Pie chart 
+Group <- c("LumA", "LumB", "Basal", "Her2","Normal")
+
+vol.4 <- c(length(clus4.LumA), length(clus4.LumB), length(clus4.Basal), length(clus4.Her2), length(clus4.Normal))
+
+pie(x=vol.4, labels = Group, radius = 1,main = "PAM50 composition of clus4", clockwise = T)
+
+# Clus.all="5"
+clus5.LumA <- clus.LumA[clus.LumA=="5"]
+clus5.LumB <- clus.LumB[clus.LumB=="5"]
+clus5.Basal <- clus.Basal[clus.Basal=="5"]
+clus5.Her2 <- clus.Her2[clus.Her2=="5"]
+clus5.Normal<- clus.Normal[clus.Normal=="5"]
+
+## Pie chart 
+Group <- c("LumA", "LumB", "Basal", "Her2","Normal")
+
+vol.5 <- c(length(clus5.LumA), length(clus5.LumB), length(clus5.Basal), length(clus5.Her2), length(clus5.Normal))
+
+pie(x=vol.5, labels = Group, radius = 1,main = "PAM50 composition of clus5", clockwise = T)
+
+
+
+```
+
+# Deconvlution of all patients (Including rare + scaling factor= 1000000)
+```{r}
+
+All.CellFrac <- read.csv("~/data/CIBERSORTx_Job4_Results.csv") # a potential problem; seurat scaling factor is 1000000
+
+str(All.CellFrac)
+
+# Draw heatmaps 
+
+All.CellFrac.matrix <- as.matrix(rbind(All.CellFrac$Basal,
+All.CellFrac$LP,
+All.CellFrac$ML,
+All.CellFrac$Rare))
+
+rownames(All.CellFrac.matrix) <- c("Basal","LP","ML", "Rare")
+
+colnames(All.CellFrac.matrix) <- All.CellFrac$Mixture
+
+
+# my_colors <- colorRampPalette(c("cyan", "deeppink3"))
+colors = c(seq(-2,2, length=50))
+
+my_palette <- colorRampPalette(c("green", "black", "red"))
+
+library(gplots)
+
+
+heatmap.2(All.CellFrac.matrix, main="BasalFractions",Rowv=TRUE, Colv=TRUE,dendrogram='both', scale="row" ,col=my_palette,breaks=colors, trace="none",cexCol = 0.8, cexRow = 1.5)
+
+## Plot heatmap with sorted PAM50 clusters, see the composition of each cluster... 
+
+colnames(All.CellFrac.matrix) <- Clinical$BRCA_Subtype_PAM50
+All.CellFrac.matrix.order <- All.CellFrac.matrix[ , order(colnames(All.CellFrac.matrix))]
+
+colsidecolors.PAM50 <- c("red","blue","green","grey","orange")[as.factor(colnames(All.CellFrac.matrix.order))]
+heatmap.2(All.CellFrac.matrix.order, main="BasalFractions",Rowv=FALSE, Colv=FALSE,dendrogram='none', scale="row" ,col=my_palette,breaks=colors, trace="none",cexCol = 0.8, cexRow = 1.5, ColSideColors = colsidecolors.PAM50)
+
+
+library(ape)
+library(viper)
+
+# Repeat what was done within the heatmap function 
+dist.all <- dist(t(All.CellFrac.matrix), method="euclidean")
+hc.all <- hclust(dist.all, method = "complete")
+plot(hc.all,labels=F)
+hcd.all <- as.dendrogram(hc.all)
+
+# Determine the optimal number of clusters 
+Nbclust.all<-NbClust(t(All.CellFrac.matrix), distance = "euclidean", min.nc=1, max.nc=14, 
+            method = "complete", index = "ch")
+fviz_nbclust(Nbclust.all, hcut, method='silhouette',hc_method='complete') # best number of clusters=9
+
+#5 clusters 
+clus.all = cutree(hc.all, 5)  # contain assigned clusters for each patients based on heatmap results
+clus.all <- as.factor(clus.all)
+# assign colsidecolors based on identified clusters 
+
+all.cluster.color <- c("red", "orange","green","yellow")[clus.all]
+heatmap.2(All.CellFrac.matrix, main="BasalFractions",Rowv=TRUE, Colv=TRUE, scale="row",dendrogram='both', col=my_palette,breaks=colors, trace="none",ColSideColors = all.cluster.color,cexCol = 0.8, cexRow = 1.5)
+
+# Draw survival curve 
+surv_object <- Surv(time = Clinical$time, event = Clinical$vital_status)
+surv_object 
+
+# Transform the Clusters into factors with labels
+Clinical$All.clus <- factor(clus.all, 
+                     levels = c("1","2","3","4","5"))
+
+fit3 <- survfit(surv_object ~All.clus, data=Clinical)
+summary(fit3)
+ggsurvplot(fit3, data = Clinical, pval = TRUE)
+
+# 2 Clusters
+clus.all = cutree(hc.all, 2)  # contain assigned clusters for each patients based on heatmap results
+clus.all <- as.factor(clus.all)
+# assign colsidecolors based on identified clusters 
+
+all.cluster.color <- c("1"="red", "2"="orange")[clus.all]
+heatmap.2(All.CellFrac.matrix, main="BasalFractions",Rowv=TRUE, Colv=TRUE, scale="row",dendrogram='none', col=my_palette, breaks=colors, trace="none",ColSideColors = all.cluster.color,cexCol = 0.8, cexRow = 1.5)
+
+# Draw survival curve 
+surv_object <- Surv(time = Clinical$time, event = Clinical$vital_status)
+surv_object 
+
+# Transform the Clusters into factors with labels
+Clinical$All.clus <- factor(clus.all, 
+                     levels = c("1","2"))
+
+fit3 <- survfit(surv_object ~All.clus, data=Clinical)
+summary(fit3)
+ggsurvplot(fit3, data = Clinical, pval = TRUE)
+```
+### Compare to PAM50/ Directly based on RNA-seq data in UMap 
+```{r}
+BRCA <- readRDS("/home/jianglf/data/TCGA/new/TCGA_BRCA_HTSeq_Normalized_Counts.rds") #23182 rows (gene), 1090 cols (patients) # This is CPM
+
+# RNA-seq data in patients 
+
+Clinical <- readRDS("/home/jianglf/data/TCGA/new/BRCA_clinical_data.rds")
+
+##Initialize seurat object
+library(dplyr)
+library(Seurat)
+
+BRCA_seurat <- CreateSeuratObject(counts = BRCA, project = "BRCAproject", assay = "RNA", min.cells = 3, min.features = 100)
+
+
+## Normalize the data 
+BRCA_seurat <- NormalizeData(BRCA_seurat, normalization.method = "LogNormalize", scale.factor = 1000000)
+
+## PCA and umap before selection 
+all.genes <- rownames(BRCA_seurat)
+BRCA_seurat <- ScaleData(BRCA_seurat, features = all.genes)
+
+BRCA_seurat <- RunPCA(BRCA_seurat, features = all.genes)
+ElbowPlot(BRCA_seurat)
+BRCA_seurat <- RunUMAP(BRCA_seurat, dims = 1:10)
+
+Idents(BRCA_seurat)<- Clinical$BRCA_Subtype_PAM50
+
+DimPlot(BRCA_seurat, reduction = "umap",label=TRUE)
+
+## Change the idents, identified clusters... 
+
+
+```
+
+### Compare to Directly based on RNA-seq data in UMap (only basal-like)
+## Basal-Seurat identifying cluster markers based on CIBERSORTx clusters 
+```{r}
+
+library(dplyr)
+library(Seurat)
+
+BRCA.basal <- BRCA[ , Clinical$BRCA_Subtype_PAM50=="Basal"]
+
+### 1. cluster1
+
+## Need to add a first column  with gene names  (important)
+BRCA.basal.2 <- cbind (genes=rownames(BRCA.basal),BRCA.basal)
+
+clus.basal.1 <- gsub("3", "2" ,clus.basal)
+
+metaData.basal <- as.data.frame(cbind(as.character(Clinical_Basal$sample), clus.basal.1))
+colnames(metaData.basal) <- c("patientID","cluster")
+head(metaData.basal)
+
+
+## Using Deseq2 to directly identifying markers 
+#install.packages("htmltools")
+#library(htmltools)
+#source("https://bioconductor.org/biocLite.R")
+#biocLite("DESeq2")
+
+library( "DESeq2" )
+library(ggplot2)
+dds <- DESeqDataSetFromMatrix(countData=BRCA.basal.2, 
+                              colData=metaData.basal, 
+                              design=~cluster, tidy = TRUE)
+
+dds <- DESeq(dds)
+
+res <- results(dds) # extract markers for cluster1 
+head(results(dds, tidy=TRUE)) #let's look at the results table
+
+Basal1.Markers <- results(dds, tidy=TRUE)
+
+write.csv(Basal1.Markers, file="~/Basal.like1.Markers.csv")
+
+summary(res)
+
+res <- res[order(res$padj),]
+head(res)
+#reset par
+par(mfrow=c(1,1))
+# Make a basic volcano plot
+with(res, plot(log2FoldChange, -log10(pvalue), pch=20, main="Volcano plot", xlim=c(-3,3)))
+
+# Add colored points: blue if padj<0.01, red if log2FC>1 and padj<0.05)
+with(subset(res, padj<.01 ), points(log2FoldChange, -log10(pvalue), pch=20, col="blue"))
+with(subset(res, padj<.01 & abs(log2FoldChange)>2), points(log2FoldChange, -log10(pvalue), pch=20, col="red"))
+
+
+## Need to add a first column  with gene names  (important)
+BRCA.basal.2 <- cbind (genes=rownames(BRCA.basal),BRCA.basal)
+
+clus.basal.2<- gsub("1", "3" ,clus.basal)
+
+metaData.basal <- as.data.frame(cbind(as.character(Clinical_Basal$sample), clus.basal.2))
+colnames(metaData.basal) <- c("patientID","cluster")
+head(metaData.basal)
+
+
+## Using Deseq2 to directly identifying markers 
+#install.packages("htmltools")
+#library(htmltools)
+#source("https://bioconductor.org/biocLite.R")
+#biocLite("DESeq2")
+
+library( "DESeq2" )
+library(ggplot2)
+dds <- DESeqDataSetFromMatrix(countData=BRCA.basal.2, 
+                              colData=metaData.basal, 
+                              design=~cluster, tidy = TRUE)
+
+dds <- DESeq(dds)
+
+res <- results(dds) # extract markers for cluster1 
+head(results(dds, tidy=TRUE)) #let's look at the results table
+
+Basal2.Markers <- results(dds, tidy=TRUE)
+
+write.csv(Basal2.Markers, file="~/Basal.like2.Markers.csv")
+
+summary(res)
+
+res <- res[order(res$padj),]
+head(res)
+#reset par
+par(mfrow=c(1,1))
+# Make a basic volcano plot
+with(res, plot(log2FoldChange, -log10(pvalue), pch=20, main="Volcano plot", xlim=c(-3,3)))
+
+# Add colored points: blue if padj<0.01, red if log2FC>1 and padj<0.05)
+with(subset(res, padj<.01 ), points(log2FoldChange, -log10(pvalue), pch=20, col="blue"))
+with(subset(res, padj<.01 & abs(log2FoldChange)>2), points(log2FoldChange, -log10(pvalue), pch=20, col="red"))
+
+######  cluster3
+
+## Need to add a first column  with gene names  (important)
+BRCA.basal.2 <- cbind (genes=rownames(BRCA.basal),BRCA.basal)
+
+clus.basal.3<- gsub("1", "2" ,clus.basal)
+
+metaData.basal <- as.data.frame(cbind(as.character(Clinical_Basal$sample), clus.basal.3))
+colnames(metaData.basal) <- c("patientID","cluster")
+head(metaData.basal)
+
+
+## Using Deseq2 to directly identifying markers 
+#install.packages("htmltools")
+#library(htmltools)
+#source("https://bioconductor.org/biocLite.R")
+#biocLite("DESeq2")
+
+library( "DESeq2" )
+library(ggplot2)
+dds <- DESeqDataSetFromMatrix(countData=BRCA.basal.2, 
+                              colData=metaData.basal, 
+                              design=~cluster, tidy = TRUE)
+
+dds <- DESeq(dds)
+
+res <- results(dds) # extract markers for cluster1 
+head(results(dds, tidy=TRUE)) #let's look at the results table
+
+Basal3.Markers <- results(dds, tidy=TRUE)
+
+write.csv(Basal3.Markers, file="~/Basal.like3.Markers.csv")
+
+summary(res)
+
+res <- res[order(res$padj),]
+head(res)
+#reset par
+par(mfrow=c(1,1))
+# Make a basic volcano plot
+with(res, plot(log2FoldChange, -log10(pvalue), pch=20, main="Volcano plot", xlim=c(-3,3)))
+
+# Add colored points: blue if padj<0.01, red if log2FC>1 and padj<0.05)
+with(subset(res, padj<.01 ), points(log2FoldChange, -log10(pvalue), pch=20, col="blue"))
+with(subset(res, padj<.01 & abs(log2FoldChange)>2), points(log2FoldChange, -log10(pvalue), pch=20, col="red"))
+```
+
+
+
+
+```{r}
+BRCA.basal_seurat <- CreateSeuratObject(counts = BRCA.basal, project = "BRCAproject", assay = "RNA", min.cells = 3, min.features = 100)
+
+
+## Normalize the data 
+BRCA.basal_seurat <- NormalizeData(BRCA.basal_seurat, normalization.method = "LogNormalize", scale.factor = 10000)
+
+## PCA and umap before selection 
+all.genes <- rownames(BRCA.basal_seurat)
+BRCA.basal_seurat <- ScaleData(BRCA.basal_seurat, features = all.genes)
+
+BRCA.basal_seurat <- RunPCA(BRCA.basal_seurat, features = all.genes)
+ElbowPlot(BRCA.basal_seurat)
+BRCA.basal_seurat <- RunUMAP(BRCA.basal_seurat, dims = 1:10)
+
+Idents(BRCA.basal_seurat)<- clus.basal
+
+DimPlot(BRCA.basal_seurat, reduction = "umap",label=TRUE)
+
+## Identify markers 
+
+Basal_subtype_markers <- FindAllMarkers(BRCA.basal_seurat, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.15)
+
+Basal_subtype_markers <- Basal_subtype_markers[Basal_subtype_markers$p_val_adj<0.05, ]
+DoHeatmap(BRCA.basal_seurat, features = Basal_subtype_markers$gene, size=5) + NoLegend()
+# 56, 30, 1
+Basal_Like1 <- Basal_subtype_markers[Basal_subtype_markers$cluster=="1",]$gene
+Basal_Like2 <- Basal_subtype_markers[Basal_subtype_markers$cluster=="2",]$gene
+write.csv(cbind(Basal_Like1, Basal_Like2),file = "~/Basal_subtype_markers.csv")
+
+## Extract the markers 
+
+for(i in 1:3){
+ filenames=paste("~/refined_GeneMarkers/cluster", i, ".markers.csv", sep="") 
+ write.csv(FindMarkers(NP1, ident.1=i, min.pct=0.25,logfc.threshold = 0.2) ,filenames)
+}
+
+## Do heatmap, using selected markers from basal cell types (bad)
+
+ BasalCellMarkers <- sapply(Basal.markers$gene,toupper)
+DoHeatmap(BRCA.basal_seurat, features = BasalCellMarkers, size=5) + NoLegend()
+
+```
+## Add two Colsidecolor bars  (failed, colors and break setting in heatmap plus is different, no key)
+```{r}
+install.packages("heatmap.plus")
+
+PAM50.color <- c("red", "orange","green","yellow","grey")[as.factor(Clinical$BRCA_Subtype_PAM50)]
+library(heatmap.plus)
+Colsidecolor.2 <- cbind(all.cluster.color, PAM50.color)
+
+colors.2 = c(seq(-5,5, length=400))
+
+my_palette.2 <- colorRampPalette(c("green", "black", "red"))(n=399)
+
+heatmap.2(All.CellFrac.matrix, main="BasalFractions",Rowv=TRUE, Colv=TRUE, scale="row",dendrogram='none', col=my_palette,breaks=colors, trace="none",cexCol = 0.8, cexRow = 1.5, ColSideColors=all.cluster.color)
+
+heatmap.plus(All.CellFrac.matrix, Rowv=TRUE, Colv=TRUE, keep.dendro=FALSE, scale='row',ColSideColors =Colsidecolor.2)
+
+
+```
+
+# (2016 paper)Estimating propertions of cell types in bulk RNA-seq TCGA data
+```{r}
+
+
+overlapping <- Reduce(intersect, list(rownames(BRCA),c(MammaryMarkers$ML, MammaryMarkers$Basal, MammaryMarkers$LP,MammaryMarkers$Rare)))
+str(overlapping)
+
+
+library(bseqsc)
+BRCA.matrix <- as(BRCA_seurat[["RNA"]]@counts, "matrix")
+rownames(BRCA.matrix) <- lapply(rownames(BRCA.matrix), tolower)
+library(lattice)
+library(survival)
+library(Formula)
+library(ggplot2)
+library(Hmisc)
+rownames(BRCA.matrix) <- lapply(rownames(BRCA.matrix), capitalize)
+
+#  Need to create an Expressiion set for downstream analysis 
+
+Groups <- Clinical$BRCA_Subtype_PAM50
+names(Groups) <- colnames(BRCA.matrix)
+Groups <- as.data.frame(Groups)
+
+phenoData <- new("AnnotatedDataFrame", data=Groups)
+
+
+BRCA.Ex <- ExpressionSet(BRCA.matrix, phenoData=phenoData)
+
+
+bseqsc_config('~/CIBERSORT.R')
+fit <- bseqsc_proportions(BRCA.Ex , B, verbose = TRUE)
+
+# Postive control: using example data, but using my code 
+eset <- readRDS('~/data/GSE50244.rds')
+eislet <- readRDS('~/data/islet-eset.rds')
+data(pancreasMarkers)
+str(pancreasMarkers)
+B <- bseqsc_basis(eislet, pancreasMarkers, clusters = 'cellType', samples = 'sampleID', ct.scale = TRUE)
+plotBasis(B, pancreasMarkers, Colv = NA, Rowv = NA, col = 'Blues')
+fit <- bseqsc_proportions(eset, B, verbose = TRUE)
+pData(eset) <- cbind(pData(eset), t(coef(fit)))
+
+
+pData(BRCA.Ex) <- cbind(pData(BRCA.Ex), t(coef(fit)))
+
+
+BRCA_seurat
+```
