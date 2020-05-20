@@ -6,7 +6,7 @@ analysis of single cell RNA sequencing data from mammary gland to guide deconvol
 The code files were organized according to the sequential steps required to complete the project
 
 1.	Downloading and Preprocessing of TCGA data 
-(bulk RNA-seq and Clnical data) 
+(bulk RNA-seq and Clinical data) 
 
 2.	Single cell RNA-seq analyses using Seurat 
 (finding clusters and DE marker; both for low and high resolution)
